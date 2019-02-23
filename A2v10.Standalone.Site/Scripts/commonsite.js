@@ -49,7 +49,7 @@
 })();
 // Copyright © 2015-2018 Alex Kukhtin. All rights reserved.
 
-// 20180623-7233
+// 20181120-7363
 // platform/polyfills.js
 
 
@@ -74,6 +74,8 @@
 				break;
 			pElem = pElem.parentElement;
 		}
+		if (!pElem)
+			return;
 		let parentRect = pElem.getBoundingClientRect();
 		if (elRect.top < parentRect.top)
 			el.scrollIntoView(true);
@@ -99,12 +101,40 @@
 
 // Copyright © 2015-2018 Alex Kukhtin. All rights reserved.
 
-// 20181117-7359
+/*20181204-7382*/
+/* platform/webvue.js */
+
+(function () {
+
+	function set(target, prop, value) {
+		Vue.set(target, prop, value);
+	}
+
+	function defer(func) {
+		Vue.nextTick(func);
+	}
+
+
+	app.modules['std:platform'] = {
+		set: set,
+		defer: defer,
+		File: File, /*file ctor*/
+		performance: performance
+	};
+
+	app.modules['std:eventBus'] = new Vue({});
+
+})();
+
+// Copyright © 2015-2019 Alex Kukhtin. All rights reserved.
+
+// 20190221-7438
 // services/utils.js
 
 app.modules['std:utils'] = function () {
 
-	const locale = window.$$locale;
+	const locale = require('std:locale');
+	const platform = require('std:platform');
 	const dateLocale = locale.$Locale;
 	const _2digit = '2-digit';
 
@@ -116,6 +146,8 @@ app.modules['std:utils'] = function () {
 
 	const currencyFormat = new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6, useGrouping: true }).format;
 	const numberFormat = new Intl.NumberFormat(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 6, useGrouping: true }).format;
+
+	let numFormatCache = {};
 
 
 	return {
@@ -152,6 +184,7 @@ app.modules['std:utils'] = function () {
 			equal: dateEqual,
 			isZero: dateIsZero,
 			formatDate: formatDate,
+			format: formatDate,
 			add: dateAdd,
 			diff: dateDiff,
 			create: dateCreate,
@@ -166,6 +199,10 @@ app.modules['std:utils'] = function () {
 			containsText: textContainsText,
 			sanitize,
 			splitPath
+		},
+		currency: {
+			round: currencyRound,
+			format: currencyFormat
 		},
 		func: {
 			curry,
@@ -184,7 +221,7 @@ app.modules['std:utils'] = function () {
 	function isObjectExact(value) { return isObject(value) && !Array.isArray(value); }
 
 	function isPrimitiveCtor(ctor) {
-		return ctor === String || ctor === Number || ctor === Boolean || ctor === Date || ctor === File || ctor === Object;
+		return ctor === String || ctor === Number || ctor === Boolean || ctor === Date || ctor === platform.File || ctor === Object;
 	}
 
 	function isDateCtor(ctor) {
@@ -296,7 +333,43 @@ app.modules['std:utils'] = function () {
 		return obj;
 	}
 
-	function format(obj, dataType, hideZeros) {
+	function formatNumber(num, format) {
+		if (!format)
+			return numberFormat(num);
+		if (numFormatCache[format])
+			return numFormatCache[format](num);
+		let re = /^([#][,\s])?(#*)?(0*)?\.?(0*)?(#*)?$/;
+		let fmt = format.match(re);
+		if (!fmt) {
+			console.error(`Invalid number format: '${format}'`);
+			return num;
+		}
+		function getlen(x) {
+			return x ? x.length : 0;
+		}
+
+		// 1-sep, 2-int part(#), 3-int part(0), 4-fract part (0), 5-fract part (#) 
+		let useGrp = !!fmt[1],
+			fih = getlen(fmt[2]), fi0 = getlen(fmt[3]),
+			fp0 = getlen(fmt[4]), fph = getlen(fmt[5]);
+
+		//console.dir(fmt);
+		//console.dir({ useGrp, fp0, fph, fi0, fih });
+
+		let formatFunc = Intl.NumberFormat(undefined, {
+			minimumFractionDigits: fp0,
+			maximumFractionDigits: fp0 + fph,
+			minimumIntegerDigits: fi0,
+			useGrouping: useGrp
+		}).format;
+
+		numFormatCache[format] = formatFunc;
+
+		return formatFunc(num);
+	}
+
+	function format(obj, dataType, opts) {
+		opts = opts || {};
 		if (!dataType)
 			return obj;
 		if (!isDefined(obj))
@@ -311,6 +384,8 @@ app.modules['std:utils'] = function () {
 					return '';
 				return formatDate(obj) + ' ' + formatTime(obj);
 			case "Date":
+				if (isString(obj))
+					obj = string2Date(obj);
 				if (!isDate(obj)) {
 					console.error(`Invalid Date for utils.format (${obj})`);
 					return obj;
@@ -338,20 +413,25 @@ app.modules['std:utils'] = function () {
 				return obj.format('Date');
 			case "Currency":
 				if (!isNumber(obj)) {
-					console.error(`Invalid Currency for utils.format (${obj})`);
-					return obj;
+					obj = toNumber(obj);
+					//TODO:check console.error(`Invalid Currency for utils.format (${obj})`);
+					//return obj;
 				}
-				if (hideZeros && obj === 0)
+				if (opts.hideZeros && obj === 0)
 					return '';
+				if (opts.format)
+					return formatNumber(obj, opts.format);
 				return currencyFormat(obj);
 			case "Number":
 				if (!isNumber(obj)) {
-					console.error(`Invalid Number for utils.format (${obj})`);
-					return obj;
+					obj = toNumber(obj);
+					//TODO:check console.error(`Invalid Number for utils.format (${obj})`);
+					//return obj;
 				}
-				if (hideZeros && obj === 0)
+				if (opts.hideZeros && obj === 0)
 					return '';
-				return numberFormat(obj);
+
+				return formatNumber(obj, opts.format);
 			default:
 				console.error(`Invalid DataType for utils.format (${dataType})`);
 		}
@@ -414,18 +494,37 @@ app.modules['std:utils'] = function () {
 		return str;
 	}
 
+	function string2Date(str) {
+		try {
+			let dt = new Date(str);
+			dt.setHours(0, -dt.getTimezoneOffset(), 0, 0);
+			return dt;
+		} catch (err) {
+			return str;
+		}
+	}
+
 	function dateParse(str) {
 		str = str || '';
 		if (!str) return dateZero();
 		let today = dateToday();
-		let seg = str.split('.');
+		let seg = str.split(/[^\d]/).filter(x => x);
 		if (seg.length === 1) {
 			seg.push('' + (today.getMonth() + 1));
 			seg.push('' + today.getFullYear());
 		} else if (seg.length === 2) {
 			seg.push('' + today.getFullYear());
 		}
-		let td = new Date(+seg[2], +seg[1] - 1, +seg[0], 0, 0, 0, 0);
+		let normalizeYear = function (y) {
+			y = '' + y;
+			switch (y.length) {
+				case 2: y = '20' + y; break;
+				case 4: break;
+				default: y = today.getFullYear(); break;
+			}
+			return +y;
+		};
+		let td = new Date(+normalizeYear(seg[2]), +((seg[1] ? seg[1] : 1) - 1), +seg[0], 0, 0, 0, 0);
 		if (isNaN(td.getDate()))
 			return dateZero();
 		td.setHours(0, -td.getTimezoneOffset(), 0, 0);
@@ -594,12 +693,26 @@ app.modules['std:utils'] = function () {
 			return fn(...args, ..._arg);
 		};
 	}
+
+	function currencyRound(n, digits) {
+		if (isNaN(n))
+			return Nan;
+		if (!isDefined(digits))
+			digits = 2;
+		let m = false;
+		if (n < 0) {
+			n = -n;
+			m = true;
+		}
+		// toFixed = avoid js rounding error
+		let r = Number(Math.round(n.toFixed(12) + `e${digits}`) + `e-${digits}`);
+		return m ? -r : r;
+	}
 };
 
+// Copyright © 2015-2019 Alex Kukhtin. All rights reserved.
 
-// Copyright © 2015-2018 Alex Kukhtin. All rights reserved.
-
-/*20180619-7227*/
+/*20190221-7439*/
 /* services/url.js */
 
 app.modules['std:url'] = function () {
@@ -621,7 +734,8 @@ app.modules['std:url'] = function () {
 		firstUrl: '',
 		encodeUrl: encodeURIComponent,
 		helpHref,
-		replaceSegment: replaceSegment
+		replaceSegment: replaceSegment,
+		removeFirstSlash
 	};
 
 	function normalize(elem) {
@@ -641,6 +755,11 @@ app.modules['std:url'] = function () {
 		return path;
 	}
 
+	function removeFirstSlash(url) {
+		if (url && url.startsWith && url.startsWith('/'))
+			return url.substring(1);
+		return url;
+	}
 	function combine(...args) {
 		return '/' + args.map(normalize).filter(x => !!x).join('/');
 	}
@@ -1116,34 +1235,9 @@ app.modules['std:modelInfo'] = function () {
 };
 
 
-// Copyright © 2015-2018 Alex Kukhtin. All rights reserved.
+// Copyright © 2015-2019 Alex Kukhtin. All rights reserved.
 
-/*20180227-7121*/
-/* platform/webvue.js */
-
-(function () {
-
-	function set(target, prop, value) {
-		Vue.set(target, prop, value);
-	}
-
-	function defer(func) {
-		Vue.nextTick(func);
-	}
-
-
-	app.modules['std:platform'] = {
-		set: set,
-		defer: defer
-	};
-
-	app.modules['std:eventBus'] = new Vue({});
-
-})();
-
-// Copyright © 2015-2018 Alex Kukhtin. All rights reserved.
-
-// 20180903-7300
+// 20190221-7439
 /* services/http.js */
 
 app.modules['std:http'] = function () {
@@ -1160,6 +1254,15 @@ app.modules['std:http'] = function () {
 		upload: upload,
 		localpost
 	};
+
+	function blob2String(blob, callback) {
+		const fr = new FileReader();
+		fr.addEventListener('loadend', (e) => {
+			const text = fr.result;
+			callback(text);
+		});
+		fr.readAsText(blob);
+	}
 
 	function doRequest(method, url, data, raw) {
 		return new Promise(function (resolve, reject) {
@@ -1179,8 +1282,12 @@ app.modules['std:http'] = function () {
 					resolve(xhrResult);
 				}
 				else if (xhr.status === 255) {
-					if (raw)
-						reject(xhr.statusText); // response is blob!
+					if (raw) {
+						if (xhr.response instanceof Blob)
+							blob2String(xhr.response, (msg) => reject('server error: ' + msg));
+						else
+							reject(xhr.statusText); // response is blob!
+					}
 					else
 						reject(xhr.responseText || xhr.statusText);
 				}
@@ -1240,6 +1347,11 @@ app.modules['std:http'] = function () {
 		return new Promise(function (resolve, reject) {
 			doRequest('GET', url)
 				.then(function (html) {
+					if (html.startsWith('<!DOCTYPE')) {
+						// full page - may be login?
+						window.location.assign('/');
+						return;
+					}
 					let dp = new DOMParser();
 					let rdoc = dp.parseFromString(html, 'text/html');
 					// first element from fragment body
@@ -1260,10 +1372,16 @@ app.modules['std:http'] = function () {
 						}
 					}
 					if (selector.firstElementChild && selector.firstElementChild.__vue__) {
-						let ve = selector.firstElementChild.__vue__;
+						let fec = selector.firstElementChild;
+						let ve = fec.__vue__;
 						ve.$data.__baseUrl__ = baseUrl || urlTools.normalizeRoot(url);
 						// save initial search
 						ve.$data.__baseQuery__ = urlTools.parseUrlAndQuery(url).query;
+						if (fec.classList.contains('modal')) {
+							let dca = fec.getAttribute('data-controller-attr');
+							if (dca)
+								eventBus.$emit('modalSetAttribites', dca, ve);
+						}
 					}
 					resolve(true);
 				})
@@ -2013,9 +2131,9 @@ Vue.component('a2-pager', {
 });
 
 
-// Copyright © 2015-2018 Alex Kukhtin. All rights reserved.
+/*! Copyright © 2015-2019 Alex Kukhtin. All rights reserved.*/
 
-// 20181117-7359
+// 20190105-7402
 // services/datamodel.js
 
 (function () {
@@ -2120,7 +2238,7 @@ Vue.component('a2-pager', {
 				let srcval = source[prop] || null;
 				shadow[prop] = srcval ? new Date(srcval) : utils.date.zero();
 				break;
-			case File:
+			case platform.File:
 			case Object:
 				shadow[prop] = null;
 				break;
@@ -2150,10 +2268,12 @@ Vue.component('a2-pager', {
 				if (val === this._src_[prop])
 					return;
 				let oldVal = this._src_[prop];
-				let changingEvent = (this._path_ || 'Root') + '.' + prop + '.changing';
-				let ret = this._root_.$emit(changingEvent, this, val, oldVal, prop);
-				if (ret === false)
-					return;
+				if (!this._lockEvents_) {
+					let changingEvent = (this._path_ || 'Root') + '.' + prop + '.changing';
+					let ret = this._root_.$emit(changingEvent, this, val, oldVal, prop);
+					if (ret === false)
+						return;
+				}
 				if (this._src_[prop] && this._src_[prop].$set) {
 					// object
 					this._src_[prop].$set(val);
@@ -2239,7 +2359,7 @@ Vue.component('a2-pager', {
 		const ctorname = elem.constructor.name;
 		let startTime = null;
 		if (ctorname === 'TRoot')
-			startTime = performance.now();
+			startTime = platform.performance.now();
 		parent = parent || elem;
 		defHidden(elem, SRC, {});
 		defHidden(elem, PATH, path || '');
@@ -2266,6 +2386,9 @@ Vue.component('a2-pager', {
 
 		if (path && path.endsWith(']'))
 			elem.$selected = false;
+
+		if (elem._meta_.$items)
+			elem.$expanded = false; // tree elem
 
 		defPropertyGet(elem, '$valid', function () {
 			if (this._root_._needValidate_)
@@ -2295,6 +2418,18 @@ Vue.component('a2-pager', {
 			return !this.$valid;
 		});
 
+		elem.$errors = function (prop) {
+			if (!this) return null;
+			let root = this._root_;
+			if (!root) return null;
+			if (!root._validate_)
+				return null;
+			let path = `${this._path_}.${prop}`; 
+			let arr = root._validate_(this, path, this[prop]);
+			if (arr && arr.length === 0) return null;
+			return arr;
+		};
+		
 		if (elem._meta_.$group === true) {
 			defPropertyGet(elem, "$groupName", function () {
 				if (!utils.isDefined(this.$level))
@@ -2345,7 +2480,7 @@ Vue.component('a2-pager', {
 			defHiddenGet(elem, '$readOnly', isReadOnly);
 			defHiddenGet(elem, '$stateReadOnly', isStateReadOnly);
 			defHiddenGet(elem, '$isCopy', isModelIsCopy);
-			elem._seal_ = seal
+			elem._seal_ = seal;
 		}
 		if (startTime) {
 			logtime('create root time:', startTime, false);
@@ -2557,10 +2692,10 @@ Vue.component('a2-pager', {
 			function append(src, select) {
 				let addingEvent = that._path_ + '[].adding';
 				let newElem = that.$new(src);
-				// TODO: emit adding and check result
+				// emit adding and check result
 				let er = that._root_.$emit(addingEvent, that/*array*/, newElem/*elem*/);
 				if (er === false)
-					return; // disabled
+					return null; // disabled
 				let len = that.length;
 				let ne = null;
 				switch (to) {
@@ -2609,9 +2744,28 @@ Vue.component('a2-pager', {
 
 		arr.$empty = function () {
 			if (this.$root.isReadOnly)
-				return;
+				return this;
 			this.splice(0, this.length);
 			if ('$RowCount' in this) this.$RowCount = 0;
+			return this;
+		};
+
+		arr.$renumberRows = function () {
+			if (!this.length) return this;
+			let item = this[0];
+			// renumber rows
+			if ('$rowNo' in item._meta_) {
+				let rowNoProp = item._meta_.$rowNo;
+				for (let i = 0; i < this.length; i++) {
+					this[i][rowNoProp] = i + 1; // 1-based
+				}
+			}
+			return this;
+		};
+
+		arr.$sort = function (compare) {
+			this.sort(compare);
+			this.$renumberRows();
 			return this;
 		};
 
@@ -2620,35 +2774,31 @@ Vue.component('a2-pager', {
 			if (!sel) return; // already null
 			sel.$selected = false;
 			emitSelect(this, null);
+			return this;
 		};
 
 		arr.$remove = function (item) {
 			if (this.$root.isReadOnly)
-				return;
+				return this;
 			if (!item)
-				return;
+				return this;
 			let index = this.indexOf(item);
 			if (index === -1)
-				return;
+				return this;
 			this.splice(index, 1);
 			if ('$RowCount' in this) this.$RowCount -= 1;
 			// EVENT
 			let eventName = this._path_ + '[].remove';
 			this._root_.$setDirty(true);
 			this._root_.$emit(eventName, this /*array*/, item /*elem*/, index);
-			if (!this.length) return;
+			if (!this.length) return this;
 			if (index >= this.length)
 				index -= 1;
-			// renumber rows
-			if ('$rowNo' in item._meta_) {
-				let rowNoProp = item._meta_.$rowNo;
-				for (let i = 0; i < this.length; i++) {
-					this[i][rowNoProp] = i + 1; // 1-based
-				}
-			}
+			this.$renumberRows();
 			if (this.length > index) {
 				this[index].$select();
 			}
+			return this;
 		};
 
 		arr.$copy = function (src) {
@@ -2661,6 +2811,14 @@ Vue.component('a2-pager', {
 				}
 			}
 			return this;
+		};
+
+		arr.__fireChange__ = function (opts) {
+			let root = this.$root;
+			let itm = this;
+			if (opts === 'selected')
+				itm = this.$selected;
+			root.$emit(this._path_ + '[].change', this, itm);
 		};
 	}
 
@@ -2776,6 +2934,16 @@ Vue.component('a2-pager', {
 			if (sel) sel.$selected = false;
 			this.$selected = true;
 			emitSelect(arr, this);
+			if (this._meta_.$items) {
+				// expand all parent items
+				let p = this._parent_._parent_;
+				while (p) {
+					p.$expanded = true;
+					p = p._parent_._parent_;
+					if (!p || p === this.$root)
+						break;
+				}
+			}
 		};
 	}
 
@@ -3028,7 +3196,7 @@ Vue.component('a2-pager', {
 		me._needValidate_ = false;
 		if (force)
 			validators.removeWeak();
-		var startTime = performance.now();
+		var startTime = platform.performance.now();
 		let tml = me.$template;
 		if (!tml) return;
 		let vals = tml.validators;
@@ -3040,7 +3208,6 @@ Vue.component('a2-pager', {
 				allerrs.push({ x: val, e: err1 });
 			}
 		}
-		var e = performance.now();
 		logtime('validation time:', startTime);
 		return allerrs;
 		//console.dir(allerrs);
@@ -3091,7 +3258,7 @@ Vue.component('a2-pager', {
 		return opts && opts.noDirty;
 	}
 
-	function merge(src, afterSave) {
+	function merge(src, afterSave, existsOnly) {
 		let oldId = this.$id__;
 		try {
 			if (src === null)
@@ -3127,6 +3294,8 @@ Vue.component('a2-pager', {
 					} else if (utils.isPrimitiveCtor(ctor)) {
 						platform.set(this, prop, src[prop]);
 					} else {
+						if (existsOnly && !(prop in src))
+							continue; // no item in src
 						let newsrc = new ctor(src[prop], prop, this);
 						platform.set(this, prop, newsrc);
 					}
@@ -3262,7 +3431,8 @@ Vue.component('a2-pager', {
 		props: {
 			src: String,
 			cssClass: String,
-			needReload: Boolean
+			needReload: Boolean,
+			done: Function
 		},
 		data() {
 			return {
@@ -3274,6 +3444,8 @@ Vue.component('a2-pager', {
 		methods: {
 			loaded(ok) {
 				this.loading = false;
+				if (this.done)
+					this.done();
 			},
 			requery() {
 				if (this.currentUrl) {
@@ -3384,9 +3556,9 @@ Vue.component('a2-pager', {
 		}
 	});
 })();
-// Copyright © 2015-2018 Alex Kukhtin. All rights reserved.
+// Copyright © 2015-2019 Alex Kukhtin. All rights reserved.
 
-// 20181103-7342
+// 20190219-7436
 // components/modal.js
 
 
@@ -3403,8 +3575,8 @@ Vue.component('a2-pager', {
 	const utils = require('std:utils');
 
 	const modalTemplate = `
-<div class="modal-window" @keydown.tab="tabPress">
-	<include v-if="isInclude" class="modal-body" :src="dialog.url"></include>
+<div class="modal-window" @keydown.tab="tabPress" :class="mwClass">
+	<include v-if="isInclude" class="modal-body" :src="dialog.url" :done="loaded"></include>
 	<div v-else class="modal-body">
 		<div class="modal-header" v-drag-window><span v-text="title"></span><button ref='btnclose' class="btnclose" @click.prevent="modalClose(false)">&#x2715;</button></div>
 		<div :class="bodyClass">
@@ -3426,16 +3598,20 @@ Vue.component('a2-pager', {
 	const setWidthComponent = {
 		inserted(el, binding) {
 			// TODO: width or cssClass???
-			//alert('set width-created:' + binding.value);
-			// alert(binding.value.cssClass);
 			let mw = el.closest('.modal-window');
 			if (mw) {
 				if (binding.value.width)
 					mw.style.width = binding.value.width;
-				if (binding.value.cssClass)
-					mw.classList.add(binding.value.cssClass);
+				let cssClass = binding.value.cssClass;
+				switch (cssClass) {
+					case 'modal-large':
+						mw.style.width = '800px'; // from less
+						break;
+					case 'modal-small':
+						mw.style.width = '300px'; // from less
+						break;
+				}
 			}
-			//alert(el.closest('.modal-window'));
 		}
 	};
 
@@ -3505,7 +3681,8 @@ Vue.component('a2-pager', {
 		data() {
 			// always need a new instance of function (modal stack)
 			return {
-				keyUpHandler: function () {
+				modalCreated: false,
+				keyUpHandler: function (event) {
 					// escape
 					if (event.which === 27) {
 						eventBus.$emit('modalClose', false);
@@ -3518,6 +3695,9 @@ Vue.component('a2-pager', {
 		methods: {
 			modalClose(result) {
 				eventBus.$emit('modalClose', result);
+			},
+			loaded() {
+				// include loading is complete
 			},
 			messageText() {
 				return utils.text.sanitize(this.dialog.message);
@@ -3568,6 +3748,9 @@ Vue.component('a2-pager', {
 			isInclude: function () {
 				return !!this.dialog.url;
 			},
+			mwClass() {
+				return this.modalCreated ? 'loaded' : null;
+			},
 			hasIcon() {
 				return !!this.dialog.style;
 			},
@@ -3597,7 +3780,11 @@ Vue.component('a2-pager', {
 				if (this.dialog.buttons)
 					return this.dialog.buttons;
 				else if (this.dialog.style === 'alert')
-					return [{ text: okText, result: false, tabindex:1 }];
+					return [{ text: okText, result: false, tabindex: 1 }];
+				else if (this.dialog.style === 'alert-ok') {
+					this.dialog.style = 'alert';
+					return [{ text: okText, result: true, tabindex: 1 }];
+				}
 				else if (this.dialog.style === 'info')
 					return [{ text: okText, result: false, tabindex:1 }];
 				return [
@@ -3612,6 +3799,9 @@ Vue.component('a2-pager', {
 				document.activeElement.blur();
 		},
 		mounted() {
+			setTimeout(() => {
+				this.modalCreated = true;
+			}, 50); // same as shell
 		},
 		destroyed() {
 			document.removeEventListener('keyup', this.keyUpHandler);
@@ -3819,7 +4009,7 @@ Vue.component('a2-pager', {
 
 			$format(value, dataType, hideZeros) {
 				if (!dataType) return value;
-				return utils.format(value, dataType, hideZeros);
+				return utils.format(value, dataType, { hideZeros: hideZeros });
 			},
 
 			$save(opts) {

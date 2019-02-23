@@ -30,7 +30,7 @@ namespace A2v10.Standalone.Site
 					host as IDataConfiguration,
 					localizer as IDataLocalizer,
 					host as ITenantManager);
-				IDataScripter scripter = new VueDataScripter();
+				IDataScripter scripter = new VueDataScripter(host, localizer);
 				ILogger logger = new WebLogger(host, dbContext);
 
 				locator.RegisterService<IDbContext>(dbContext);
